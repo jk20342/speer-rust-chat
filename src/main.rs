@@ -280,10 +280,7 @@ fn main() -> AnyResult<()> {
             if args.rendezvous.is_some() && !args.advertise_lan {
                 match discover_public_ipv4_http(Duration::from_secs(4)) {
                     Some(ip) => {
-                        let m = format!(
-                            "/ip4/{}/tcp/{}/p2p/{}",
-                            ip, port, app.identity.peer_id
-                        );
+                        let m = format!("/ip4/{}/tcp/{}/p2p/{}", ip, port, app.identity.peer_id);
                         app.netlog(
                             NetLevel::Ok,
                             format!("rendezvous: detected public IPv4, advertising {m}"),
