@@ -1,3 +1,4 @@
+use std::net::{Ipv4Addr, ToSocketAddrs};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub trait IfEmpty {
@@ -100,4 +101,39 @@ pub fn unix_time_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+pub fn discover_public_ipv4_http(timeout: Duration) -> Option<String> {
+    try_fetch_ipv4_via_http("api.ipify.org:80", "api.ipify.org", "/", timeout)
+        .or_else(|| try_fetch_ipv4_via_http("icanhazip.com:80", "icanhazip.com", "/", timeout))
+}
+
+fn try_fetch_ipv4_via_http(
+    connect_addr: &str,
+    host_header: &str,
+    path: &str,
+    timeout: Duration,
+) -> Option<String> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    let addr = connect_addr.to_socket_addrs().ok()?.next()?;
+    let mut stream = TcpStream::connect_timeout(&addr, timeout).ok()?;
+    let _ = stream.set_read_timeout(Some(timeout));
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\nUser-Agent: speer-chat\r\n\r\n",
+        path = path,
+        host_header = host_header,
+    );
+    stream.write_all(request.as_bytes()).ok()?;
+    let mut buf = [0u8; 512];
+    let n = stream.read(&mut buf).ok()?;
+    let text = std::str::from_utf8(&buf[..n]).ok()?;
+    let body = text.split("\r\n\r\n").nth(1)?.trim();
+    let line = body.lines().next()?.trim();
+    if line.parse::<Ipv4Addr>().is_ok() {
+        Some(line.to_string())
+    } else {
+        None
+    }
 }

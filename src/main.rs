@@ -15,7 +15,7 @@ use crate::files::{cmd_accept_file, cmd_send_file};
 use crate::net::{bootstrap_thread, dial_peer_addr, discovery_thread, parse_multiaddr};
 use crate::rendezvous::{rendezvous_client_thread, rendezvous_server_thread};
 use crate::tui::{collect_msg_stats, poll_input, render, InputState, TerminalGuard, UiAction};
-use crate::util::{fmt_duration, IfEmpty};
+use crate::util::{discover_public_ipv4_http, fmt_duration, IfEmpty};
 use speer::sys;
 use std::env;
 use std::sync::atomic::Ordering;
@@ -36,6 +36,7 @@ struct Args {
     rendezvous_listen: Option<String>,
     room: String,
     public_addr: Option<String>,
+    advertise_lan: bool,
 }
 
 fn parse_args() -> Args {
@@ -49,6 +50,7 @@ fn parse_args() -> Args {
         rendezvous_listen: None,
         room: "default".to_string(),
         public_addr: None,
+        advertise_lan: false,
     };
     let mut it = env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -106,6 +108,8 @@ fn parse_args() -> Args {
             }
         } else if let Some(v) = arg.strip_prefix("--public-addr=") {
             args.public_addr = Some(v.to_string());
+        } else if arg == "--advertise-lan" {
+            args.advertise_lan = true;
         } else if !arg.starts_with('-') {
             args.nick = arg.chars().take(MAX_NICK_LEN - 1).collect();
         }
@@ -185,6 +189,7 @@ fn handle_command(app: &Arc<AppState>, input: &str, public_addr: &str) {
     } else if input == "/id" || input == "/me" {
         app.emit_system(format!("nick: {}", app.nick()));
         app.emit_system(format!("peer id: {}", app.identity.peer_id));
+        app.emit_system("(peer id is random each run unless you add a stable identity later)");
         app.emit_system(format!(
             "multiaddr: /ip4/{}/tcp/{}/p2p/{}",
             app.lan_ip.lock().unwrap(),
@@ -225,7 +230,7 @@ fn handle_command(app: &Arc<AppState>, input: &str, public_addr: &str) {
         app.netlog(NetLevel::Ok, "network console cleared");
     } else if input == "/help" {
         app.emit_system("Commands: /connect <addr> /send <path> /accept [id] /status /inspect /id /peers /clear /log clear /theme modern|midnight|original /quit");
-        app.emit_system("Startup flags: --connect <addr> --bootstrap <addr> --rendezvous <host:port> --room <name> --public-addr <addr>");
+        app.emit_system("Startup: --rendezvous <h:p> --room <n> [--port 4001]  optional: --public-addr <multiaddr>  --advertise-lan (LAN only)");
     } else if let Some(arg) = input.strip_prefix("/connect ") {
         let addr = arg.trim();
         if addr.is_empty() {
@@ -269,9 +274,47 @@ fn main() -> AnyResult<()> {
         port,
         app.identity.peer_id
     );
-    let public_addr = args.public_addr.clone().unwrap_or(default_public_addr);
+    let public_addr = match &args.public_addr {
+        Some(p) => p.clone(),
+        None => {
+            if args.rendezvous.is_some() && !args.advertise_lan {
+                match discover_public_ipv4_http(Duration::from_secs(4)) {
+                    Some(ip) => {
+                        let m = format!(
+                            "/ip4/{}/tcp/{}/p2p/{}",
+                            ip, port, app.identity.peer_id
+                        );
+                        app.netlog(
+                            NetLevel::Ok,
+                            format!("rendezvous: detected public IPv4, advertising {m}"),
+                        );
+                        m
+                    }
+                    None => {
+                        app.netlog(
+                            NetLevel::Warn,
+                            "rendezvous: public IPv4 lookup failed; advertising LAN — use --public-addr if remote peers cannot connect",
+                        );
+                        default_public_addr.clone()
+                    }
+                }
+            } else {
+                if args.rendezvous.is_some() && args.advertise_lan {
+                    app.netlog(
+                        NetLevel::Info,
+                        "rendezvous: --advertise-lan — using LAN multiaddr",
+                    );
+                }
+                default_public_addr.clone()
+            }
+        }
+    };
 
     app.emit_system("Welcome to speer-chat. Type /help for commands.");
+    app.emit_system(format!(
+        "your peer id: {}   (also: net log line \"identity ready\", command /id)",
+        app.identity.peer_id
+    ));
     app.netlog(
         NetLevel::Ok,
         format!("identity ready {}", app.identity.peer_id),
@@ -296,12 +339,6 @@ fn main() -> AnyResult<()> {
             app.netlog(
                 NetLevel::Warn,
                 format!("rendezvous room sanitized to {sanitized_room}"),
-            );
-        }
-        if args.public_addr.is_none() {
-            app.netlog(
-                NetLevel::Warn,
-                "no --public-addr set; advertising local LAN address",
             );
         }
         if let Some(warning) = public_addr_warning(&public_addr) {
