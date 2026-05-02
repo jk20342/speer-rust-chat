@@ -159,10 +159,7 @@ pub fn send_file_to_peer(app: &Arc<AppState>, peer: &PeerHandle, file_id: u32) {
 
     let mut sent = 0u64;
     let mut chunk = [0u8; FILE_CHUNK_BYTES];
-    loop {
-        let Ok(n) = file.read(&mut chunk) else {
-            break;
-        };
+    while let Ok(n) = file.read(&mut chunk) {
         if n == 0 {
             break;
         }
