@@ -103,12 +103,30 @@ fn receive_file_chunk(app: &Arc<AppState>, peer: &PeerHandle, payload: &str) {
         );
         return;
     };
+    if rx.received.saturating_add(chunk.len() as u64) > rx.expected {
+        let name = rx.name.clone();
+        let temp_path = temp_receive_path(&rx.path);
+        drop(rx.file.take());
+        drop(files);
+        let _ = fs::remove_file(temp_path);
+        app.emit_error(format!(
+            "file {name} exceeded advertised size; transfer canceled"
+        ));
+        return;
+    }
     if file.write_all(&chunk).is_ok() {
         rx.received += chunk.len() as u64;
         app.netlog(
             NetLevel::Traffic,
             format!("file rx {} {}/{}B", rx.name, rx.received, rx.expected),
         );
+    } else {
+        let name = rx.name.clone();
+        let temp_path = temp_receive_path(&rx.path);
+        drop(rx.file.take());
+        drop(files);
+        let _ = fs::remove_file(temp_path);
+        app.emit_error(format!("could not write file {name}; transfer canceled"));
     }
 }
 
@@ -128,18 +146,35 @@ fn receive_file_done(app: &Arc<AppState>, peer: &PeerHandle, payload: &str) {
     let mut rx = files.rx.remove(pos);
     drop(rx.file.take());
     let ok = rx.received == rx.expected;
-    app.emit_system(format!(
-        "received file {} -> {} ({}/{} bytes){}",
-        rx.name,
-        rx.path.display(),
-        rx.received,
-        rx.expected,
-        if ok { "" } else { " incomplete" }
-    ));
-    app.netlog(
-        if ok { NetLevel::Ok } else { NetLevel::Warn },
-        format!("file saved {}", rx.name),
-    );
+    let temp_path = temp_receive_path(&rx.path);
+    drop(files);
+
+    if ok {
+        match fs::rename(&temp_path, &rx.path) {
+            Ok(()) => {
+                app.emit_system(format!(
+                    "received file {} -> {} ({}/{} bytes)",
+                    rx.name,
+                    rx.path.display(),
+                    rx.received,
+                    rx.expected
+                ));
+                app.netlog(NetLevel::Ok, format!("file saved {}", rx.name));
+            }
+            Err(err) => {
+                let _ = fs::remove_file(&temp_path);
+                app.emit_error(format!("could not save received file {}: {err}", rx.name));
+                app.netlog(NetLevel::Error, format!("file save failed {}", rx.name));
+            }
+        }
+    } else {
+        let _ = fs::remove_file(&temp_path);
+        app.emit_system(format!(
+            "discarded incomplete file {} ({}/{} bytes)",
+            rx.name, rx.received, rx.expected
+        ));
+        app.netlog(NetLevel::Warn, format!("file incomplete {}", rx.name));
+    }
 }
 
 pub fn send_file_to_peer(app: &Arc<AppState>, peer: &PeerHandle, file_id: u32) {
@@ -236,7 +271,8 @@ pub fn cmd_accept_file(app: &Arc<AppState>, wanted: Option<u32>) {
         }
         let idx = candidates[0];
         let path = files.rx[idx].path.clone();
-        let Ok(file) = File::create(&path) else {
+        let temp_path = temp_receive_path(&path);
+        let Ok(file) = File::create(&temp_path) else {
             app.emit_error("could not open receive file");
             return;
         };
@@ -257,4 +293,12 @@ pub fn cmd_accept_file(app: &Arc<AppState>, wanted: Option<u32>) {
     }
     app.emit_system(format!("accepted file {name} -> {}", path.display()));
     app.netlog(NetLevel::Ok, format!("file accept {name} id {id}"));
+}
+
+fn temp_receive_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("download");
+    path.with_file_name(format!("{file_name}.part"))
 }
