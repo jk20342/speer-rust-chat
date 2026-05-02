@@ -35,6 +35,68 @@ pub fn start_peer(app: Arc<AppState>, initiator: bool, fd: i32, addr: String) {
     });
 }
 
+pub fn dial_peer_addr(
+    app: Arc<AppState>,
+    source: &str,
+    peer_id: Option<&str>,
+    addr: &str,
+    tie_break: bool,
+    remember_attempt: bool,
+) -> bool {
+    if let Some(peer_id) = peer_id {
+        if peer_id.is_empty() || peer_id == app.identity.peer_id {
+            return false;
+        }
+        if app
+            .connected_peers()
+            .iter()
+            .any(|p| p.info.lock().unwrap().remote_pid_full == peer_id)
+        {
+            return false;
+        }
+        if tie_break && app.identity.peer_id.as_str() > peer_id {
+            return false;
+        }
+        if remember_attempt {
+            let key = format!("peer:{peer_id}");
+            let mut attempted = app.attempted.lock().unwrap();
+            if !attempted.insert(key) {
+                return false;
+            }
+        }
+    }
+
+    let Some((host, port)) = parse_multiaddr(addr) else {
+        app.netlog(NetLevel::Warn, format!("{source} bad addr {addr}"));
+        return false;
+    };
+    let dial_addr = format!("{host}:{port}");
+    if app
+        .connected_peers()
+        .iter()
+        .any(|p| p.info.lock().unwrap().addr == dial_addr)
+    {
+        return false;
+    }
+
+    if remember_attempt && peer_id.is_none() {
+        let key = format!("addr:{dial_addr}");
+        let mut attempted = app.attempted.lock().unwrap();
+        if !attempted.insert(key) {
+            return false;
+        }
+    }
+
+    app.netlog(NetLevel::Info, format!("{source} dial {addr}"));
+    if let Some(fd) = tcp_dial(&host, port) {
+        start_peer(app, true, fd, dial_addr);
+        true
+    } else {
+        app.netlog(NetLevel::Warn, format!("dial failed {host}:{port}"));
+        false
+    }
+}
+
 fn peer_worker(app: Arc<AppState>, peer: PeerHandle, fd: i32) -> AnyResult<()> {
     unsafe {
         sys::speer_tcp_set_io_timeout(fd, HANDSHAKE_TIMEOUT_MS);
@@ -239,18 +301,39 @@ fn peer_reader(app: Arc<AppState>, peer: PeerHandle, session: SessionPtr, stream
 }
 
 pub fn parse_multiaddr(multiaddr: &str) -> Option<(String, u16)> {
-    let ip_marker = "/ip4/";
+    let value = multiaddr.trim();
+    if !value.starts_with('/') {
+        let (host, port) = value.rsplit_once(':')?;
+        if host.is_empty() {
+            return None;
+        }
+        return Some((
+            host.trim_matches(['[', ']']).to_string(),
+            port.parse().ok()?,
+        ));
+    }
+
     let tcp_marker = "/tcp/";
-    let ip_start = multiaddr.find(ip_marker)? + ip_marker.len();
-    let tcp_start = multiaddr.find(tcp_marker)?;
-    let host = multiaddr[ip_start..tcp_start].to_string();
+    let tcp_start = value.find(tcp_marker)?;
+    let host = parse_multiaddr_host(&value[..tcp_start])?;
     let port_start = tcp_start + tcp_marker.len();
-    let port_end = multiaddr[port_start..]
+    let port_end = value[port_start..]
         .find('/')
         .map(|i| port_start + i)
-        .unwrap_or(multiaddr.len());
-    let port = multiaddr[port_start..port_end].parse().ok()?;
+        .unwrap_or(value.len());
+    let port = value[port_start..port_end].parse().ok()?;
     Some((host, port))
+}
+
+fn parse_multiaddr_host(prefix: &str) -> Option<String> {
+    for marker in ["/ip4/", "/ip6/", "/dns/", "/dns4/", "/dns6/"] {
+        if let Some(host) = prefix.strip_prefix(marker) {
+            if !host.is_empty() {
+                return Some(host.to_string());
+            }
+        }
+    }
+    None
 }
 
 struct DiscoveryCtx {
@@ -273,37 +356,29 @@ unsafe extern "C" fn on_mdns_discover(
         .to_string_lossy()
         .to_string();
 
-    if peer_id.is_empty() || peer_id == ctx.app.identity.peer_id {
-        return;
-    }
-    if ctx
-        .app
-        .connected_peers()
-        .iter()
-        .any(|p| p.info.lock().unwrap().remote_pid_full == peer_id)
-    {
-        return;
-    }
-    {
-        let mut attempted = ctx.app.attempted.lock().unwrap();
-        if !attempted.insert(peer_id.clone()) {
-            return;
-        }
-    }
-    if ctx.app.identity.peer_id.as_str() > peer_id.as_str() {
-        return;
-    }
+    dial_peer_addr(
+        ctx.app.clone(),
+        "mDNS",
+        Some(&peer_id),
+        &multiaddr,
+        true,
+        true,
+    );
+}
 
-    let Some((host, port)) = parse_multiaddr(&multiaddr) else {
-        return;
-    };
-    ctx.app.netlog(NetLevel::Info, format!("mDNS {multiaddr}"));
-    if let Some(fd) = tcp_dial(&host, port) {
-        start_peer(ctx.app.clone(), true, fd, format!("{host}:{port}"));
-    } else {
-        ctx.app
-            .netlog(NetLevel::Warn, format!("dial failed {host}:{port}"));
-    }
+pub fn bootstrap_thread(app: Arc<AppState>, peers: Vec<String>) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut tick = 0u32;
+        while !app.quit.load(Ordering::Relaxed) {
+            if tick == 0 {
+                for peer in &peers {
+                    dial_peer_addr(app.clone(), "bootstrap", None, peer, false, false);
+                }
+            }
+            tick = (tick + 1) % 30;
+            thread::sleep(Duration::from_secs(1));
+        }
+    })
 }
 
 pub fn discovery_thread(
@@ -391,4 +466,41 @@ pub fn discovery_thread(
             sys::mdns_free(mctx.as_mut());
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_multiaddr;
+
+    #[test]
+    fn parses_ip4_multiaddr() {
+        assert_eq!(
+            parse_multiaddr("/ip4/127.0.0.1/tcp/4001/p2p/peer"),
+            Some(("127.0.0.1".to_string(), 4001))
+        );
+    }
+
+    #[test]
+    fn parses_dns_multiaddr() {
+        assert_eq!(
+            parse_multiaddr("/dns/example.com/tcp/4001"),
+            Some(("example.com".to_string(), 4001))
+        );
+        assert_eq!(
+            parse_multiaddr("/dns4/bootstrap.example/tcp/4002/p2p/peer"),
+            Some(("bootstrap.example".to_string(), 4002))
+        );
+    }
+
+    #[test]
+    fn parses_plain_host_port() {
+        assert_eq!(
+            parse_multiaddr("example.com:4001"),
+            Some(("example.com".to_string(), 4001))
+        );
+        assert_eq!(
+            parse_multiaddr("127.0.0.1:4002"),
+            Some(("127.0.0.1".to_string(), 4002))
+        );
+    }
 }

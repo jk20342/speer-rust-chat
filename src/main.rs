@@ -4,6 +4,7 @@ mod ffi;
 mod files;
 mod net;
 mod protocol;
+mod rendezvous;
 mod tui;
 mod util;
 
@@ -11,7 +12,8 @@ use crate::app::{theme, AppState, NetLevel};
 use crate::constants::{CHAT_TYPE_BYE, CHAT_TYPE_MSG, MAX_NICK_LEN};
 use crate::ffi::{discover_lan_ip, make_identity, random_instance_name, tcp_listen};
 use crate::files::{cmd_accept_file, cmd_send_file};
-use crate::net::discovery_thread;
+use crate::net::{bootstrap_thread, dial_peer_addr, discovery_thread};
+use crate::rendezvous::{rendezvous_client_thread, rendezvous_server_thread};
 use crate::tui::{collect_msg_stats, poll_input, render, InputState, TerminalGuard, UiAction};
 use crate::util::{fmt_duration, IfEmpty};
 use speer::sys;
@@ -28,13 +30,25 @@ struct Args {
     nick: String,
     theme: String,
     port: u16,
+    connect: Vec<String>,
+    bootstrap: Vec<String>,
+    rendezvous: Option<String>,
+    rendezvous_listen: Option<String>,
+    room: String,
+    public_addr: Option<String>,
 }
 
 fn parse_args() -> Args {
     let mut args = Args {
         nick: "anon".to_string(),
-        theme: "modern".to_string(),
+        theme: "midnight".to_string(),
         port: 0,
+        connect: Vec::new(),
+        bootstrap: Vec::new(),
+        rendezvous: None,
+        rendezvous_listen: None,
+        room: "default".to_string(),
+        public_addr: None,
     };
     let mut it = env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -56,6 +70,42 @@ fn parse_args() -> Args {
             }
         } else if let Some(v) = arg.strip_prefix("--port=") {
             args.port = v.parse().unwrap_or(0);
+        } else if arg == "--connect" {
+            if let Some(v) = it.next() {
+                args.connect.push(v);
+            }
+        } else if let Some(v) = arg.strip_prefix("--connect=") {
+            args.connect.push(v.to_string());
+        } else if arg == "--bootstrap" {
+            if let Some(v) = it.next() {
+                args.bootstrap.push(v);
+            }
+        } else if let Some(v) = arg.strip_prefix("--bootstrap=") {
+            args.bootstrap.push(v.to_string());
+        } else if arg == "--rendezvous" {
+            if let Some(v) = it.next() {
+                args.rendezvous = Some(v);
+            }
+        } else if let Some(v) = arg.strip_prefix("--rendezvous=") {
+            args.rendezvous = Some(v.to_string());
+        } else if arg == "--rendezvous-listen" {
+            if let Some(v) = it.next() {
+                args.rendezvous_listen = Some(v);
+            }
+        } else if let Some(v) = arg.strip_prefix("--rendezvous-listen=") {
+            args.rendezvous_listen = Some(v.to_string());
+        } else if arg == "--room" {
+            if let Some(v) = it.next() {
+                args.room = v;
+            }
+        } else if let Some(v) = arg.strip_prefix("--room=") {
+            args.room = v.to_string();
+        } else if arg == "--public-addr" {
+            if let Some(v) = it.next() {
+                args.public_addr = Some(v);
+            }
+        } else if let Some(v) = arg.strip_prefix("--public-addr=") {
+            args.public_addr = Some(v.to_string());
         } else if !arg.starts_with('-') {
             args.nick = arg.chars().take(MAX_NICK_LEN - 1).collect();
         }
@@ -63,7 +113,7 @@ fn parse_args() -> Args {
     args
 }
 
-fn handle_command(app: &Arc<AppState>, input: &str) {
+fn handle_command(app: &Arc<AppState>, input: &str, public_addr: &str) {
     if input == "/quit" || input == "/exit" {
         app.quit.store(true, Ordering::Relaxed);
     } else if input == "/peers" || input == "/who" {
@@ -95,7 +145,7 @@ fn handle_command(app: &Arc<AppState>, input: &str) {
             rx,
             tx
         ));
-        app.emit_system("stack: mDNS discovery -> TCP -> Noise XX -> Yamux -> /speer/chat/1.0.0");
+        app.emit_system("stack: mDNS/connect/bootstrap/rendezvous -> TCP -> Noise XX -> Yamux -> /speer/chat/1.0.0");
     } else if input == "/id" || input == "/me" {
         app.emit_system(format!("nick: {}", app.nick()));
         app.emit_system(format!("peer id: {}", app.identity.peer_id));
@@ -105,6 +155,7 @@ fn handle_command(app: &Arc<AppState>, input: &str) {
             app.listen_port.load(Ordering::Relaxed),
             app.identity.peer_id
         ));
+        app.emit_system(format!("public addr: {public_addr}"));
     } else if input == "/inspect" || input == "/diag" {
         let peers = app.connected_peers();
         if peers.is_empty() {
@@ -137,7 +188,15 @@ fn handle_command(app: &Arc<AppState>, input: &str) {
         app.netlog.lock().unwrap().clear();
         app.netlog(NetLevel::Ok, "network console cleared");
     } else if input == "/help" {
-        app.emit_system("Commands: /send <path> /accept [id] /status /inspect /id /peers /clear /log clear /theme modern|midnight|original /quit");
+        app.emit_system("Commands: /connect <addr> /send <path> /accept [id] /status /inspect /id /peers /clear /log clear /theme modern|midnight|original /quit");
+        app.emit_system("Startup flags: --connect <addr> --bootstrap <addr> --rendezvous <host:port> --room <name> --public-addr <addr>");
+    } else if let Some(arg) = input.strip_prefix("/connect ") {
+        let addr = arg.trim();
+        if addr.is_empty() {
+            app.emit_error("usage: /connect <host:port|multiaddr>");
+        } else {
+            dial_peer_addr(app.clone(), "manual", None, addr, false, false);
+        }
     } else if let Some(arg) = input
         .strip_prefix("/send ")
         .or_else(|| input.strip_prefix("send "))
@@ -168,6 +227,13 @@ fn main() -> AnyResult<()> {
 
     let (listen_fd, port) = tcp_listen(args.port)?;
     app.listen_port.store(port, Ordering::Relaxed);
+    let default_public_addr = format!(
+        "/ip4/{}/tcp/{}/p2p/{}",
+        app.lan_ip.lock().unwrap(),
+        port,
+        app.identity.peer_id
+    );
+    let public_addr = args.public_addr.clone().unwrap_or(default_public_addr);
 
     app.emit_system("Welcome to speer-chat. Type /help for commands.");
     app.netlog(
@@ -184,6 +250,24 @@ fn main() -> AnyResult<()> {
     );
 
     let discovery = discovery_thread(app.clone(), listen_fd, random_instance_name());
+    let mut background = Vec::new();
+    if !args.bootstrap.is_empty() {
+        background.push(bootstrap_thread(app.clone(), args.bootstrap.clone()));
+    }
+    if let Some(bind) = args.rendezvous_listen.clone() {
+        background.push(rendezvous_server_thread(app.clone(), bind));
+    }
+    if let Some(server) = args.rendezvous.clone() {
+        background.push(rendezvous_client_thread(
+            app.clone(),
+            server,
+            args.room.clone(),
+            public_addr.clone(),
+        ));
+    }
+    for addr in &args.connect {
+        dial_peer_addr(app.clone(), "manual", None, addr, false, false);
+    }
 
     let mut guard = TerminalGuard::enter()?;
     let mut input = InputState::new();
@@ -197,7 +281,7 @@ fn main() -> AnyResult<()> {
             UiAction::Redraw => should_render = true,
             UiAction::Quit => app.quit.store(true, Ordering::Relaxed),
             UiAction::Submit(line) => {
-                handle_command(&app, &line);
+                handle_command(&app, &line, &public_addr);
                 should_render = true;
             }
         }
@@ -214,5 +298,8 @@ fn main() -> AnyResult<()> {
     }
     app.quit.store(true, Ordering::Relaxed);
     let _ = discovery.join();
+    for handle in background {
+        let _ = handle.join();
+    }
     Ok(())
 }

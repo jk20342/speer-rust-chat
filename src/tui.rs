@@ -268,18 +268,22 @@ fn render_header(frame: &mut Frame<'_>, app: &Arc<AppState>, theme: Theme, area:
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("Noise XX", Style::default().fg(theme.peers[3])),
-        Span::styled(" + ", Style::default().fg(theme.dim)),
+        Span::styled("Noise", Style::default().fg(theme.peers[3])),
+        Span::styled(" / ", Style::default().fg(theme.dim)),
         Span::styled("Yamux", Style::default().fg(theme.peers[1])),
-        Span::styled(" + ", Style::default().fg(theme.dim)),
-        Span::styled("mDNS", Style::default().fg(theme.peers[2])),
+        Span::styled(" / ", Style::default().fg(theme.dim)),
+        Span::styled("mDNS+WAN", Style::default().fg(theme.peers[2])),
         Span::raw("   "),
         Span::styled(format!("{lan}:{port}"), Style::default().fg(theme.fg)),
         Span::raw("   "),
         Span::styled(format!("rx {rx} / tx {tx}"), Style::default().fg(theme.dim)),
         Span::raw("   "),
         Span::styled(
-            format!("{connected} connected"),
+            if connected > 0 {
+                format!("{connected} online")
+            } else {
+                "discovering".to_string()
+            },
             Style::default().fg(status_color),
         ),
     ]);
@@ -323,8 +327,12 @@ fn render_sidebar(frame: &mut Frame<'_>, app: &Arc<AppState>, theme: Theme, area
     let peers = app.connected_peers();
     if peers.is_empty() {
         lines.push(Line::from(Span::styled(
-            "discovering...",
+            "waiting for peers",
             Style::default().fg(theme.dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            "/connect <addr>",
+            Style::default().fg(theme.accent),
         )));
     } else {
         for (i, peer) in peers.iter().enumerate() {
@@ -347,10 +355,7 @@ fn render_sidebar(frame: &mut Frame<'_>, app: &Arc<AppState>, theme: Theme, area
     let p = Paragraph::new(Text::from(lines))
         .block(
             block(
-                Line::from(Span::styled(
-                    " Collection ",
-                    Style::default().fg(theme.accent),
-                )),
+                Line::from(Span::styled(" Peers ", Style::default().fg(theme.accent))),
                 theme,
             )
             .style(Style::default().bg(theme.panel)),
@@ -371,13 +376,13 @@ fn render_messages(
     if history.is_empty() {
         let welcome = Paragraph::new(Text::from(vec![
             Line::from(Span::styled(
-                "Welcome to speer-chat!",
+                "speer-chat midnight",
                 Style::default()
                     .fg(theme.accent)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
-                "Type /help for commands.",
+                "LAN peers appear automatically. Use /connect <addr> for wide-area peers.",
                 Style::default().fg(theme.dim),
             )),
         ]))
@@ -396,7 +401,7 @@ fn render_messages(
     for msg in history.iter().skip(start).take(max) {
         let ts = fmt_time(msg.timestamp);
         let (marker, name, color) = match msg.kind {
-            MsgKind::Chat | MsgKind::Join | MsgKind::Leave => {
+            MsgKind::Chat => {
                 let name = if msg.nick.is_empty() {
                     "unknown"
                 } else {
@@ -404,7 +409,9 @@ fn render_messages(
                 };
                 ("▌", format!("{name:<12}"), theme.peers[msg.color_idx])
             }
-            MsgKind::System => ("*", "system      ".to_string(), theme.dim),
+            MsgKind::Join => ("+", "join        ".to_string(), theme.peers[msg.color_idx]),
+            MsgKind::Leave => ("-", "leave       ".to_string(), theme.peers[4]),
+            MsgKind::System => ("·", "system      ".to_string(), theme.dim),
             MsgKind::Error => ("!", "error       ".to_string(), theme.peers[0]),
         };
         items.push(ListItem::new(Line::from(vec![
@@ -445,7 +452,7 @@ fn render_netlog(frame: &mut Frame<'_>, app: &Arc<AppState>, theme: Theme, area:
     let port = app.listen_port.load(std::sync::atomic::Ordering::Relaxed);
     let meta = Paragraph::new(Text::from(vec![
         Line::from(Span::styled(
-            "mDNS  advertising",
+            "mesh  discovering",
             Style::default()
                 .fg(theme.peers[2])
                 .add_modifier(Modifier::BOLD),
@@ -455,8 +462,8 @@ fn render_netlog(frame: &mut Frame<'_>, app: &Arc<AppState>, theme: Theme, area:
             Span::styled(format!("{lan}:{port}"), Style::default().fg(theme.fg)),
         ]),
         Line::from(vec![
-            Span::styled("stack ", Style::default().fg(theme.dim)),
-            Span::styled("Noise → Yamux → Chat", Style::default().fg(theme.peers[3])),
+            Span::styled("path  ", Style::default().fg(theme.dim)),
+            Span::styled("Noise / Yamux / Chat", Style::default().fg(theme.peers[3])),
         ]),
     ]))
     .block(
@@ -474,12 +481,12 @@ fn render_netlog(frame: &mut Frame<'_>, app: &Arc<AppState>, theme: Theme, area:
     let start = netlog.len().saturating_sub(max);
     let mut items = Vec::new();
     for entry in netlog.iter().skip(start) {
-        let color = match entry.level {
-            NetLevel::Info => theme.dim,
-            NetLevel::Ok => theme.peers[2],
-            NetLevel::Warn => theme.peers[4],
-            NetLevel::Error => theme.peers[0],
-            NetLevel::Traffic => theme.peers[3],
+        let (level, color) = match entry.level {
+            NetLevel::Info => ("net", theme.dim),
+            NetLevel::Ok => ("ok ", theme.peers[2]),
+            NetLevel::Warn => ("wrn", theme.peers[4]),
+            NetLevel::Error => ("err", theme.peers[0]),
+            NetLevel::Traffic => ("io ", theme.peers[3]),
         };
         items.push(ListItem::new(Line::from(vec![
             Span::styled(
@@ -488,7 +495,12 @@ fn render_netlog(frame: &mut Frame<'_>, app: &Arc<AppState>, theme: Theme, area:
             ),
             Span::raw(" "),
             Span::styled(
-                clip(&entry.text, top[1].width.saturating_sub(13) as usize),
+                level,
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                clip(&entry.text, top[1].width.saturating_sub(17) as usize),
                 Style::default().fg(color),
             ),
         ])));
@@ -521,7 +533,7 @@ fn render_input(
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            " > ",
+            " : ",
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
@@ -543,16 +555,25 @@ fn render_input(
 fn render_status(frame: &mut Frame<'_>, app: &Arc<AppState>, theme: Theme, area: Rect) {
     let peers = app.connected_peers().len();
     let (rx, tx) = collect_msg_stats(app);
+    let label = if area.width < 90 {
+        format!(" /connect /help     {peers} peers  {rx}/{tx} msg ")
+    } else {
+        format!(
+            " /connect /status /inspect /id /peers /clear /send /accept /theme /quit     {peers} peers  {rx}/{tx} msg "
+        )
+    };
     let gauge = Gauge::default()
         .block(Block::default().style(Style::default().bg(theme.panel)))
         .gauge_style(
             Style::default()
-                .fg(if peers > 0 { theme.peers[2] } else { theme.accent })
+                .fg(if peers > 0 {
+                    theme.peers[2]
+                } else {
+                    theme.accent
+                })
                 .bg(theme.panel),
         )
-        .label(format!(
-            " /status /inspect /id /peers /clear /send /accept /theme /quit     {peers} peers  {rx}/{tx} msg "
-        ))
+        .label(label)
         .ratio(if peers > 0 { 1.0 } else { 0.08 });
     frame.render_widget(gauge, area);
 }

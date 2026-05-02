@@ -32,20 +32,20 @@ fn rgb(v: u32) -> Color {
 pub fn theme(name: &str) -> Theme {
     match name {
         "midnight" => Theme {
-            bg: rgb(0x000000),
-            panel: rgb(0x111111),
-            fg: rgb(0xffffff),
-            dim: rgb(0x666666),
-            border: rgb(0x333333),
-            accent: rgb(0x00ff88),
-            timestamp: rgb(0x444444),
+            bg: rgb(0x050712),
+            panel: rgb(0x0d1020),
+            fg: rgb(0xf4f7ff),
+            dim: rgb(0x7b8199),
+            border: rgb(0x26314f),
+            accent: rgb(0x35f7c8),
+            timestamp: rgb(0x565d78),
             peers: [
-                rgb(0xff3366),
-                rgb(0x9966ff),
-                rgb(0x00ff88),
-                rgb(0x3399ff),
-                rgb(0xffaa00),
-                rgb(0xff66cc),
+                rgb(0xff4f87),
+                rgb(0xb48cff),
+                rgb(0x35f7c8),
+                rgb(0x6ad7ff),
+                rgb(0xffc857),
+                rgb(0xff7ad9),
             ],
         },
         "original" => Theme {
