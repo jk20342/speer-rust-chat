@@ -10,6 +10,12 @@ yamux, then speaks `/speer/chat/1.0.0`.
 it has chat messages, a small network console, peer stats, themes, and basic
 file transfer.
 
+## install
+
+you can install speer with this command
+```bash
+cargo install speer-chat
+```
 ## run
 
 ```bash
