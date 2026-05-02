@@ -1,6 +1,6 @@
 # speer-chat
 
-rust terminal chat app for speer.
+rust terminal chat app using speer.
 
 ![speer-chat screenshot](assets/tui_screenshot.png)
 
