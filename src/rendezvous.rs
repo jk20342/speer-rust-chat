@@ -56,6 +56,10 @@ pub fn rendezvous_client_thread(
     public_addr: String,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
+        app.netlog(
+            NetLevel::Info,
+            format!("rendezvous advertise {public_addr}"),
+        );
         let mut tick = 0u32;
         while !app.quit.load(Ordering::Relaxed) {
             if tick == 0 {
@@ -93,20 +97,23 @@ fn rendezvous_round(
     peer_id: &str,
     public_addr: &str,
 ) -> std::io::Result<Vec<(String, String)>> {
+    let room = token(room);
+    let peer_id = token(peer_id);
+    let public_addr = token(public_addr);
+    if room.is_empty() || peer_id.is_empty() || public_addr.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "empty rendezvous room, peer id, or public address",
+        ));
+    }
     let addr = server.to_socket_addrs()?.next().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "no rendezvous address")
     })?;
     let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
-    writeln!(
-        stream,
-        "REGISTER {} {} {}",
-        token(room),
-        token(peer_id),
-        token(public_addr)
-    )?;
-    writeln!(stream, "LIST {}", token(room))?;
+    writeln!(stream, "REGISTER {} {} {}", room, peer_id, public_addr)?;
+    writeln!(stream, "LIST {}", room)?;
     writeln!(stream, "QUIT")?;
 
     let mut peers = Vec::new();

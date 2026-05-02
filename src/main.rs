@@ -12,7 +12,7 @@ use crate::app::{theme, AppState, NetLevel};
 use crate::constants::{CHAT_TYPE_BYE, CHAT_TYPE_MSG, MAX_NICK_LEN};
 use crate::ffi::{discover_lan_ip, make_identity, random_instance_name, tcp_listen};
 use crate::files::{cmd_accept_file, cmd_send_file};
-use crate::net::{bootstrap_thread, dial_peer_addr, discovery_thread};
+use crate::net::{bootstrap_thread, dial_peer_addr, discovery_thread, parse_multiaddr};
 use crate::rendezvous::{rendezvous_client_thread, rendezvous_server_thread};
 use crate::tui::{collect_msg_stats, poll_input, render, InputState, TerminalGuard, UiAction};
 use crate::util::{fmt_duration, IfEmpty};
@@ -111,6 +111,42 @@ fn parse_args() -> Args {
         }
     }
     args
+}
+
+fn rendezvous_token(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| !ch.is_control() && !ch.is_whitespace())
+        .collect()
+}
+
+fn is_private_or_loopback_host(host: &str) -> bool {
+    if host == "localhost" || host == "127.0.0.1" || host == "::1" {
+        return true;
+    }
+    let octets: Vec<_> = host
+        .split('.')
+        .filter_map(|part| part.parse::<u8>().ok())
+        .collect();
+    match octets.as_slice() {
+        [10, _, _, _] | [127, _, _, _] | [192, 168, _, _] => true,
+        [172, second, _, _] => (16..=31).contains(second),
+        _ => false,
+    }
+}
+
+fn public_addr_warning(public_addr: &str) -> Option<String> {
+    let Some((host, _)) = parse_multiaddr(public_addr) else {
+        return Some(format!(
+            "public addr is not dialable: {public_addr}; use host:port or /ip4|/dns/<host>/tcp/<port>/p2p/<peer-id>"
+        ));
+    };
+    if is_private_or_loopback_host(&host) {
+        return Some(format!(
+            "public addr uses private host {host}; peers on another network probably need a public DNS/IP plus port forwarding"
+        ));
+    }
+    None
 }
 
 fn handle_command(app: &Arc<AppState>, input: &str, public_addr: &str) {
@@ -248,6 +284,30 @@ fn main() -> AnyResult<()> {
         NetLevel::Ok,
         format!("mDNS service {}", constants::CHAT_SERVICE_TYPE),
     );
+    if let Some(server) = &args.rendezvous {
+        let sanitized_room = rendezvous_token(&args.room);
+        app.netlog(
+            NetLevel::Info,
+            format!("rendezvous server {server} room {sanitized_room}"),
+        );
+        if sanitized_room.is_empty() {
+            app.emit_error("rendezvous room cannot be empty");
+        } else if sanitized_room != args.room {
+            app.netlog(
+                NetLevel::Warn,
+                format!("rendezvous room sanitized to {sanitized_room}"),
+            );
+        }
+        if args.public_addr.is_none() {
+            app.netlog(
+                NetLevel::Warn,
+                "no --public-addr set; advertising local LAN address",
+            );
+        }
+        if let Some(warning) = public_addr_warning(&public_addr) {
+            app.netlog(NetLevel::Warn, warning);
+        }
+    }
 
     let discovery = discovery_thread(app.clone(), listen_fd, random_instance_name());
     let mut background = Vec::new();
