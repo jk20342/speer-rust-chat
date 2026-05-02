@@ -320,6 +320,12 @@ impl AppState {
         }
     }
 
+    /// Release a peer slot when the worker exits (failed scan, failed handshake, or disconnect).
+    pub fn remove_peer(&self, peer: &PeerHandle) {
+        let mut peers = self.peers.lock().unwrap();
+        peers.retain(|p| !std::sync::Arc::ptr_eq(&p.info, &peer.info));
+    }
+
     pub fn can_receive_file(&self) -> bool {
         self.files.lock().unwrap().rx.len() < MAX_RX_FILES
     }

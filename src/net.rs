@@ -27,11 +27,21 @@ pub fn start_peer(app: Arc<AppState>, initiator: bool, fd: i32, addr: String) {
     }
 
     thread::spawn(move || {
-        if let Err(err) = peer_worker(app.clone(), peer.clone(), fd) {
-            app.emit_error(format!("peer error: {err}"));
+        let result = peer_worker(app.clone(), peer.clone(), fd);
+        match result {
+            Ok(()) => {}
+            Err(ref err) => {
+                let handshake_done = peer.info.lock().unwrap().handshake_done;
+                if handshake_done {
+                    app.emit_error(format!("peer error: {err}"));
+                } else {
+                    app.netlog(NetLevel::Warn, format!("incoming connection closed: {err}"));
+                }
+            }
         }
         peer.dead.store(true, Ordering::Relaxed);
         peer.info.lock().unwrap().active = false;
+        app.remove_peer(&peer);
     });
 }
 
