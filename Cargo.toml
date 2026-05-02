@@ -1,0 +1,14 @@
+[package]
+name = "speer-chat"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/jk20342/speer-rust-chat"
+homepage = "https://github.com/jk20342/speer-rust-chat"
+description = "terminal chat app for speer"
+exclude = [".github/**"]
+
+[dependencies]
+crossterm = "0.29.0"
+ratatui = "0.30.0"
+speer = { version = "0.1.0", path = "../speer", default-features = false, features = ["build-from-source", "full-chat"] }

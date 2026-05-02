@@ -1,0 +1,65 @@
+name: rust ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  SPEER_SOURCE_DIR: ${{ github.workspace }}/speer-src
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: checkout speer-chat
+        uses: actions/checkout@v4
+        with:
+          path: speer-chat
+
+      - name: checkout speer
+        uses: actions/checkout@v4
+        with:
+          repository: jk20342/speer-rust
+          path: speer
+
+      - name: checkout speer-sys
+        uses: actions/checkout@v4
+        with:
+          repository: jk20342/speer-sys-rust
+          path: speer-sys
+
+      - name: checkout speer c source
+        uses: actions/checkout@v4
+        with:
+          repository: jk20342/speer
+          path: speer-src
+
+      - name: setup rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: install native deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake clang libclang-dev pkg-config
+
+      - name: fmt
+        working-directory: speer-chat
+        run: cargo fmt --check
+
+      - name: check
+        working-directory: speer-chat
+        run: cargo check
+
+      - name: clippy
+        working-directory: speer-chat
+        run: cargo clippy -- -D warnings
+
+      - name: release build
+        working-directory: speer-chat
+        run: cargo build --release
