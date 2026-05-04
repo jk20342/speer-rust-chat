@@ -1,6 +1,6 @@
 [package]
 name = "speer-chat"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/jk20342/speer-rust-chat"
@@ -11,4 +11,4 @@ exclude = [".github/**"]
 [dependencies]
 crossterm = "0.29.0"
 ratatui = "0.30.0"
-speer = { version = "0.2.0", path = "../speer", default-features = false, features = ["build-from-source", "full-chat"] }
+speer = { version = "0.2.2", path = "../speer-rust", default-features = false, features = ["build-from-source", "full-chat"] }

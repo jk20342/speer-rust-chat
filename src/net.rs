@@ -445,7 +445,7 @@ pub fn discovery_thread(
             sys::speer_tcp_set_nonblocking(listen_fd, 1);
         }
 
-        let mut announce_acc = 0;
+        let mut last_maint = Instant::now();
         while !app.quit.load(Ordering::Relaxed) {
             let mut fd = -1;
             let mut peer_addr = [0 as c_char; 64];
@@ -458,13 +458,12 @@ pub fn discovery_thread(
                 start_peer(app.clone(), false, fd, addr);
             }
 
-            announce_acc += 100;
-            if announce_acc >= 1000 {
+            if last_maint.elapsed() >= Duration::from_secs(1) {
                 unsafe {
                     sys::mdns_announce(mctx.as_mut());
                     sys::mdns_query(mctx.as_mut(), query.as_ptr());
                 }
-                announce_acc = 0;
+                last_maint = Instant::now();
             }
             unsafe {
                 sys::mdns_poll(mctx.as_mut(), 100);
