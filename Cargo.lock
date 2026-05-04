@@ -1310,6 +1310,8 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 [[package]]
 name = "speer"
 version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fefb10bffd07ecfa844da98b110d415ca6da1841f2c4b5a6f61e88af82478503"
 dependencies = [
  "speer-sys",
 ]
@@ -1326,6 +1328,8 @@ dependencies = [
 [[package]]
 name = "speer-sys"
 version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9394f15293c5c70fcf846abac00bbd730dc8ecd716a1baa4295e3de4cf966f5"
 dependencies = [
  "bindgen",
  "cmake",
