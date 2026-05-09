@@ -29,7 +29,6 @@ inside the app:
 ```text
 /status /inspect /id /peers /clear /theme /send /accept /quit
 ```
-
 ## commands
 
 - `/status` - local address, uptime, peer count, message stats
