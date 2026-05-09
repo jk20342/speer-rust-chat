@@ -22,7 +22,6 @@ cargo install speer-chat
 cargo run -- --nick alice
 cargo run -- --nick bob --theme midnight
 ```
-
 use a fixed port if you want another client to target this instance:
 
 ```bash
