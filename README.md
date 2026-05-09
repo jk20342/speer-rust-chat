@@ -11,23 +11,19 @@ it has chat messages, a small network console, peer stats, themes, and basic
 file transfer.
 
 ## install
-
 you can install speer with this command
 ```bash
 cargo install speer-chat
 ```
 ## run
-
 ```bash
 cargo run -- --nick alice
 cargo run -- --nick bob --theme midnight
 ```
 use a fixed port if you want another client to target this instance:
-
 ```bash
 cargo run -- --nick alice --port 4001
 ```
-
 inside the app:
 
 ```text
