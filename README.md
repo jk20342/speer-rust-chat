@@ -25,12 +25,10 @@ use a fixed port if you want another client to target this instance:
 cargo run -- --nick alice --port 4001
 ```
 inside the app:
-
 ```text
 /status /inspect /id /peers /clear /theme /send /accept /quit
 ```
 ## commands
-
 - `/status` - local address, uptime, peer count, message stats
 - `/inspect` - connection details for each peer
 - `/id` - local nick, peer id, and multiaddr
